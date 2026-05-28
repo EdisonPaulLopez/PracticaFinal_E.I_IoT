@@ -118,6 +118,8 @@ void initBLE() {
   pAdv->addServiceUUID(SERVICE_UUID);
   pAdv->setAppearance(0x0180);          // Generic Sensor
   pAdv->enableScanResponse(true);       // NECESARIO para UUID de 128 bits
+  pAdv->setMinInterval(32);   // 32 × 0.625ms = 20ms
+  pAdv->setMaxInterval(64);   // 64 × 0.625ms = 40ms
 
   // ── Scan response: UUID repetido para garantizar detección ─
   // El cliente usa setActiveScan(true), por lo que recibirá este paquete.

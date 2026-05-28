@@ -3,20 +3,9 @@
  *  SISTEMA DE ANÁLISIS DE SUELO — ESP32 SENSORES (CLIENTE BLE)
  *  Versión corregida — Mayo 2025
  * ============================================================
- *  Correcciones aplicadas:
- *   1. Guard "_connecting" para evitar llamar connectToCam()
- *      mientras ya hay una conexión en progreso.
- *   2. Re-escaneo bloqueado si _found o _connecting están activos.
- *   3. NimBLEDevice::getScan()->clearResults() antes de cada scan
- *      para que NimBLE no reutilice resultados cacheados.
- *   4. setActiveScan(true) confirmado para recibir scan response
- *      con el UUID completo de 128 bits.
- *   5. Timeout de conexión extendido a 10 s.
- *   6. Limpieza de pClient si connect() falla.
- *
  *  Librerías requeridas (Arduino IDE → Manage Libraries):
  *   - NimBLE-Arduino   (h2zero)          v1.4.x o v2.x
- *   - Adafruit SSD1306 (Adafruit)
+ *   - Adafruit SH110X (Adafruit)
  *   - Adafruit GFX Library (Adafruit)
  *   - ArduinoJson      (Benoit Blanchon)
  *  Incluidas en ESP32 Core (no instalar aparte):
@@ -27,7 +16,7 @@
 // ─── LIBRERÍAS ───────────────────────────────────────────────
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <Adafruit_SH110X.h>
 #include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -42,7 +31,7 @@
 #define WIFI_TIMEOUT_MS  15000
 
 // ─── ENDPOINT SERVIDOR ───────────────────────────────────────
-#define SERVER_URL  "http://192.168.1.10:5000/api/soil"
+#define SERVER_URL  "http://10.40.160.34:5000/api/soil"
 #define API_KEY     "suelos2026"
 
 // ─── CLAVE AES-128 (exactamente 16 bytes) ────────────────────
@@ -62,22 +51,23 @@ static const uint8_t AES_IV[16] = {
 #define SCREEN_HEIGHT  64
 #define OLED_RESET     -1
 #define OLED_ADDR     0x3C
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SH1106G display = Adafruit_SH1106G(128, 64, &Wire, -1);
 
 // ─── PINES ───────────────────────────────────────────────────
 // ADC1 únicamente (ADC2 no funciona con WiFi activo)
 #define PIN_PH        34    // pH4502C  → GPIO34 (ADC1_CH6)
-#define PIN_HUMEDAD   35    // YL-69    → GPIO35 (ADC1_CH7)
+#define PIN_HUMEDAD   32    // YL-69    → GPIO35 (ADC1_CH7)
 
 // LEDs
 #define LED_VERDE     25
+#define LED_AZUL1     33
 #define LED_AZUL      26
 #define LED_AMARILLO  27
 #define LED_ROJO      14
 
 // Botones
 #define BTN_ENCENDIDO  4
-#define BTN_CAPTURA    2
+#define BTN_CAPTURA   13
 #define BTN_ENVIAR    15
 
 // I2C
@@ -90,8 +80,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define CAM_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 // ─── CALIBRACIÓN pH4502C ─────────────────────────────────────
-#define PH_ADC_AT_7   3100    // Calibrar con buffer pH 7
-#define PH_SLOPE      198.0f  // Counts ADC por unidad pH
+#define PH_ADC_AT_7   3100    
+#define PH_SLOPE      198.0f  
 #define PH_SAMPLES    20
 
 // ─── CALIBRACIÓN YL-69 ───────────────────────────────────────
@@ -182,12 +172,10 @@ void classifySoilComplete(const char* camType, float ph, float hum,
   else if (hum >= 40.0f && hum <= 65.0f)  strncpy(texture, "humeda",      19);
   else                                    strncpy(texture, "semi-humeda", 19);
 
-  if      (ph >= 6.0f && ph <= 7.5f && hum >= 25.0f && hum <= 70.0f)
+  if      (ph >= 5.5f && ph <= 7.5f && hum >= 25.0f && hum <= 80.0f)
                                           strncpy(fertility, "posiblemente fertil", 31);
-  else if (ph >= 5.5f && ph < 6.0f)      strncpy(fertility, "levemente acida",     31);
   else if (ph < 5.5f)                    strncpy(fertility, "acida",               31);
-  else if (ph > 7.5f && ph <= 8.5f)      strncpy(fertility, "alcalina",            31);
-  else if (ph > 8.5f)                    strncpy(fertility, "muy alcalina",        31);
+  else if (ph > 7.5f)                    strncpy(fertility, "alcalina",            31);
   else                                   strncpy(fertility, "condicion atipica",   31);
 
   snprintf(output, outLen, "%s %s %s", camType, texture, fertility);
@@ -235,11 +223,11 @@ int aesEncryptToBase64(const char* plaintext, char* outputBuf, size_t outputLen)
 void oledShowBoot() {
   display.clearDisplay();
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(SH110X_WHITE);
   display.setCursor(8,  4); display.println("ANALIZADOR DE SUELO");
   display.setCursor(18,18); display.println("Ing. Electronica");
   display.setCursor(10,32); display.println("Presione ENCENDIDO");
-  display.drawRect(0,0,128,64,SSD1306_WHITE);
+  display.drawRect(0,0,128,64,SH110X_WHITE);
   display.display();
 }
 
@@ -247,7 +235,7 @@ void oledMsg(const char* l1, const char* l2 = "",
              const char* l3 = "", const char* l4 = "") {
   display.clearDisplay();
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(SH110X_WHITE);
   display.setCursor(0,  0); display.println(l1);
   display.setCursor(0, 16); display.println(l2);
   display.setCursor(0, 32); display.println(l3);
@@ -258,7 +246,7 @@ void oledMsg(const char* l1, const char* l2 = "",
 void oledShowResults() {
   display.clearDisplay();
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(SH110X_WHITE);
 
   char l1[22] = {0}, l2[22] = {0};
   size_t len = strlen(soilData.soilType);
@@ -267,7 +255,7 @@ void oledShowResults() {
 
   display.setCursor(0,  0); display.print(l1);
   display.setCursor(0, 12); display.print(l2);
-  display.drawFastHLine(0, 26, 128, SSD1306_WHITE);
+  display.drawFastHLine(0, 26, 128, SH110X_WHITE);
 
   char phStr[16], humStr[16];
   snprintf(phStr,  sizeof(phStr),  "pH:%.2f",  soilData.ph);
@@ -400,7 +388,6 @@ MyScanCallbacks* scanCallbacks = nullptr;
 
 // ─── CONEXIÓN ────────────────────────────────────────────────
 bool connectToCam(const NimBLEAddress& addr) {
-  // Limpiar cliente anterior si existe
   if (pClient) {
     if (pClient->isConnected()) pClient->disconnect();
     NimBLEDevice::deleteClient(pClient);
@@ -408,20 +395,35 @@ bool connectToCam(const NimBLEAddress& addr) {
     pRemoteChar = nullptr;
   }
 
+  delay(300);
+
   pClient = NimBLEDevice::createClient(addr);
-  // Parámetros de conexión: intervalo 12*1.25=15ms, latencia 0, timeout 51*10=510ms
-  pClient->setConnectionParams(12, 12, 0, 51);
-  pClient->setConnectTimeout(10);   // 10 segundos
+  pClient->setConnectionParams(16, 32, 0, 400);
+  pClient->setConnectTimeout(15);
 
   Serial.printf("[BLE] Conectando a %s ...\n", addr.toString().c_str());
 
-  if (!pClient->connect()) {
-    Serial.println("[BLE] connect() falló");
+  // ── Reintentos ───────────────────────────────────────────
+  bool conectado = false;
+  for (int intento = 1; intento <= 3; intento++) {
+    Serial.printf("[BLE] Intento %d/3...\n", intento);
+    if (pClient->connect()) {
+      conectado = true;
+      Serial.println("[BLE] Conectado al servidor");
+      break;
+    }
+    if (intento < 3) delay(1000);
+  }
+
+  if (!conectado) {
+    Serial.println("[BLE] connect() falló tras 3 intentos");
     NimBLEDevice::deleteClient(pClient);
     pClient = nullptr;
     return false;
   }
-  Serial.println("[BLE] Conectado al servidor");
+
+  // ── Pausa para estabilizar antes de descubrir servicios ──
+  delay(500);
 
   NimBLERemoteService* svc = pClient->getService(CAM_SERVICE_UUID);
   if (!svc) {
@@ -438,14 +440,18 @@ bool connectToCam(const NimBLEAddress& addr) {
   }
 
   if (pRemoteChar->canNotify()) {
+    delay(200);
     bool ok = pRemoteChar->subscribe(true, notifyCallback);
     Serial.printf("[BLE] Subscribe: %s\n", ok ? "OK" : "FALLO");
+    if (!ok) {
+      pClient->disconnect();
+      return false;
+    }
   }
 
   bleConnected = true;
   return true;
 }
-
 // ─── INICIAR SCAN ────────────────────────────────────────────
 void startBLEScan() {
   if (!scanCallbacks) scanCallbacks = new MyScanCallbacks();
@@ -469,6 +475,7 @@ void setup() {
 
   // LEDs
   pinMode(LED_VERDE,    OUTPUT); digitalWrite(LED_VERDE,    LOW);
+  pinMode(LED_AZUL1,     OUTPUT); digitalWrite(LED_AZUL1,     LOW);
   pinMode(LED_AZUL,     OUTPUT); digitalWrite(LED_AZUL,     LOW);
   pinMode(LED_AMARILLO, OUTPUT); digitalWrite(LED_AMARILLO, LOW);
   pinMode(LED_ROJO,     OUTPUT); digitalWrite(LED_ROJO,     LOW);
@@ -483,7 +490,7 @@ void setup() {
 
   // I2C + OLED
   Wire.begin(SDA_PIN, SCL_PIN);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+  if (!display.begin(OLED_ADDR, true)) {
     Serial.println("[ERR] OLED no detectada — verificar cableado I2C");
   } else {
     oledShowBoot();
@@ -496,7 +503,8 @@ void setup() {
   WiFi.mode(WIFI_OFF);
 
   // NimBLE init
-  NimBLEDevice::init("SueloSmart_MCU");
+  NimBLEDevice::init("SueloSensor_SEN");
+  NimBLEDevice::setMTU(128);
   NimBLEDevice::setPower(ESP_PWR_LVL_N0);
 
   Serial.printf("[MEM] RAM libre: %d bytes\n", ESP.getFreeHeap());
@@ -524,7 +532,7 @@ void loop() {
     if (connectToCam(scanCallbacks->_foundAddr)) {
       oledMsg("BLE Conectado!", "ESP32-CAM OK",
               "Presione CAPTURA", "para analizar");
-      digitalWrite(LED_AZUL, HIGH);
+      digitalWrite(LED_AZUL1, HIGH);
     } else {
       oledMsg("BLE: fallo", "Reintentando en 20s");
       bleConnected = false;
@@ -558,6 +566,7 @@ void loop() {
       }
       digitalWrite(LED_VERDE,    LOW);
       digitalWrite(LED_AZUL,     LOW);
+      digitalWrite(LED_AZUL1,    LOW);
       digitalWrite(LED_AMARILLO, LOW);
       digitalWrite(LED_ROJO,     LOW);
       WiFi.mode(WIFI_OFF);
@@ -612,7 +621,7 @@ void loop() {
       // Si perdimos conexión BLE, marcarla como inactiva
       if (bleConnected && pClient && !pClient->isConnected()) {
         bleConnected = false;
-        digitalWrite(LED_AZUL, LOW);
+        digitalWrite(LED_AZUL1, LOW);
         Serial.println("[BLE] Conexion perdida durante captura");
       }
     }
@@ -623,7 +632,7 @@ void loop() {
                          soilData.soilType, sizeof(soilData.soilType));
 
     datosCaptured = true;
-    digitalWrite(LED_AZUL, bleConnected ? HIGH : LOW);
+    digitalWrite(LED_AZUL1, bleConnected ? HIGH : LOW);
     oledShowResults();
     Serial.printf("[SYS] Resultado: %s | pH:%.2f | Hum:%.1f%%\n",
                   soilData.soilType, soilData.ph, soilData.humidity);
