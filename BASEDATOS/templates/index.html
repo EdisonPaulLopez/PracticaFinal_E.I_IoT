@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitor de suelos</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f0f4f0;
+      padding: 2rem;
+      color: #222;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 1.2rem;
+      color: #1a4731;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    th {
+      background: #2c6e49;
+      color: white;
+      padding: 12px 16px;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    td {
+      padding: 10px 16px;
+      border-bottom: 1px solid #eee;
+      font-size: 0.88rem;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td      { background: #f5faf7; }
+
+    .si  { background:#d4edda; color:#155724;
+           padding:2px 10px; border-radius:12px; font-size:.8rem; }
+    .no  { background:#f8d7da; color:#721c24;
+           padding:2px 10px; border-radius:12px; font-size:.8rem; }
+
+    #estado {
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Monitor de suelos — Lecturas recibidas</h1>
+  <p id="estado">Cargando datos...</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Tipo de suelo</th>
+        <th>pH</th>
+        <th>Humedad %</th>
+        <th>Posiblemente fértil</th>
+        <th>Hora de envío</th>
+      </tr>
+    </thead>
+    <tbody id="cuerpo"></tbody>
+  </table>
+
+  <script>
+    fetch('/lecturas')
+      .then(r => r.json())
+      .then(filas => {
+        const estado = document.getElementById('estado');
+        const cuerpo = document.getElementById('cuerpo');
+
+        if (filas.length === 0) {
+          estado.textContent = "Aún no hay lecturas registradas.";
+          return;
+        }
+
+        estado.textContent = filas.length + " lectura(s) encontrada(s).";
+
+        filas.forEach(f => {
+          const fertil = f.fertil
+            ? '<span class="si">Sí</span>'
+            : '<span class="no">No</span>';
+
+          cuerpo.innerHTML += `
+            <tr>
+              <td>${f.id}</td>
+              <td>${f.tipo_suelo}</td>
+              <td>${f.ph.toFixed(2)}</td>
+              <td>${f.humedad_pct.toFixed(1)} %</td>
+              <td>${fertil}</td>
+              <td>${f.hora_envio}</td>
+            </tr>`;
+        });
+      })
+      .catch(() => {
+        document.getElementById('estado').textContent =
+          "Error al cargar los datos.";
+      });
+  </script>
+
+</body>
+</html>
